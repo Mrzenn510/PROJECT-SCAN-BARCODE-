@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>Scan QR APAR — Pemeliharaan Bulanan</title>
+<link rel="stylesheet" href="style.css" />
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script src="data.js"></script>
+</head>
+<body>
+
+<div class="card">
+  <h1>📷 Scan QR APAR / FSS — Pemeliharaan Bulanan</h1>
+  <div class="hint">Arahkan kamera ke QR yang tertempel di alat. Data alat otomatis muncul dari Data FSS &amp; APAR, langsung diisi checklist KONDISI &amp; KETERANGAN seperti form Pemeliharaan APAR Bulanan.</div>
+</div>
+
+<div class="tabbar">
+  <button id="tabBtnScan" class="active">📷 Scan</button>
+  <button id="tabBtnRiwayat">📋 Riwayat &amp; Rekap</button>
+</div>
+
+<div id="statusMsg" class="status"></div>
+
+<!-- ======================= TAB: SCAN ======================= -->
+<div id="tabScan" class="tabpanel active">
+
+  <div class="card">
+    <h2>Scan QR Alat</h2>
+    <button id="btnStart">Mulai Scan QR</button>
+    <div id="reader" class="hidden"></div>
+
+    <label for="manualKode">Atau ketik kode alat manual</label>
+    <div style="display:flex; gap:8px;">
+      <input type="text" id="manualKode" placeholder="Contoh: 110" inputmode="numeric" />
+      <button id="btnCariManual" class="secondary small" style="width:auto;">Cari</button>
+    </div>
+    <div class="hint" style="margin-top:10px;"><a class="nav" href="generate.html">🏷️ Cetak / buat QR kode alat di sini</a></div>
+  </div>
+
+  <div class="card hidden" id="resultCard">
+    <span class="result-kode" id="resultKode">Kode</span>
+    <span class="result-kode" id="resultStatusBadge" style="background:#334155;color:#94a3b8;"></span>
+    <div class="result-title" id="resultTitle">Ruangan</div>
+    <dl class="result-list" id="resultList"></dl>
+
+    <h3>KONDISI</h3>
+    <div id="kondisiList"></div>
+
+    <h3>KETERANGAN</h3>
+    <textarea id="keteranganInput" placeholder="Catatan pemeriksaan (opsional)"></textarea>
+
+    <div class="foto-upload">
+      <label>Bukti Foto (EVIDEN)</label>
+      <div class="foto-btn-row">
+        <button id="btnUploadFoto" class="secondary small" style="flex:1;">📷 Upload Foto</button>
+        <button id="btnHapusFoto" class="ghost small hidden" style="flex:1;">🗑️ Hapus Foto</button>
+      </div>
+      <input type="file" id="fotoInput" accept="image/*" capture="environment" class="hidden" />
+      <img id="fotoPreview" class="foto-preview" alt="Preview bukti foto" />
+    </div>
+
+    <button id="btnSimpan">✅ Simpan Hasil Pemeriksaan</button>
+    <button id="btnScanLagi" class="secondary">Scan Lagi</button>
+  </div>
+
+</div>
+
+<!-- ======================= TAB: RIWAYAT ======================= -->
+<div id="tabRiwayat" class="tabpanel">
+
+  <div class="card">
+    <h2>Riwayat Pemeriksaan (sudah discan/diisi)</h2>
+    <div class="search-row">
+      <input type="text" id="searchRiwayat" placeholder="Cari kode / ruangan / gedung..." />
+    </div>
+    <div id="logList"></div>
+  </div>
+
+  <div class="card">
+    <h2>Progres Tugas</h2>
+    <div class="progress-wrap">
+      <div class="progress-bar-track"><div class="progress-bar-fill" id="progressFill"></div></div>
+      <div class="progress-label"><span id="progressText">0 / 0 selesai</span><span id="progressPct">0%</span></div>
+    </div>
+    <div class="progress-done-all hidden" id="doneAllLabel">🎉 Done All — Semua Tugas Selesai!</div>
+  </div>
+
+  <div class="card">
+    <h2>Export Data</h2>
+    <div class="hint">Download data FSS &amp; APAR lengkap dengan kolom QRkode, KONDISI, EVIDEN, KETERANGAN, dan foto bukti sesuai hasil pemeriksaan di atas.</div>
+    <button id="btnDownload" class="secondary">⬇️ Download Excel (DATA FSS &amp; APAR)</button>
+    <button id="btnResetLog" class="danger">🗑️ Reset Semua Riwayat</button>
+  </div>
+
+</div>
+
+<script>
+/* ===========================================================
+   Index cepat data alat: kode -> baris data
+   =========================================================== */
+const DATA_BY_KODE = {};
+APAR_DATA.forEach(r => { if (r.kode) DATA_BY_KODE[String(r.kode).trim()] = r; });
+const TOTAL_TUGAS = APAR_DATA.filter(r => r.kode).length;
+
+/* ===========================================================
+   Penyimpanan riwayat (localStorage) — bertahan di device ini
+   =========================================================== */
+const LOG_KEY = 'apar_log_v1';
+function loadLog() {
+  try { return JSON.parse(localStorage.getItem(LOG_KEY) || '{}'); }
+  catch (e) { return {}; }
+}
+function saveLog(log) { localStorage.setItem(LOG_KEY, JSON.stringify(log)); }
+let LOG = loadLog();
+
+/* ===========================================================
+   Status pesan
+   =========================================================== */
+const statusMsg = document.getElementById('statusMsg');
+function showStatus(msg, type) {
+  statusMsg.textContent = msg;
+  statusMsg.className = 'status ' + type;
+  setTimeout(() => { statusMsg.className = 'status'; }, 4000);
+}
+
+/* ===========================================================
+   Tabs
+   =========================================================== */
+const tabBtnScan = document.getElementById('tabBtnScan');
+const tabBtnRiwayat = document.getElementById('tabBtnRiwayat');
+const tabScan = document.getElementById('tabScan');
+const tabRiwayat = document.getElementById('tabRiwayat');
+
+function goTab(name) {
+  const isScan = name === 'scan';
+  tabBtnScan.classList.toggle('active', isScan);
+  tabBtnRiwayat.classList.toggle('active', !isScan);
+  tabScan.classList.toggle('active', isScan);
+  tabRiwayat.classList.toggle('active', !isScan);
+  if (!isScan) { renderRiwayat(); renderProgress(); }
+}
+tabBtnScan.addEventListener('click', () => goTab('scan'));
+tabBtnRiwayat.addEventListener('click', () => goTab('riwayat'));
+
+/* ===========================================================
+   KONDISI — daftar item pemeriksaan (sesuai form Pemeliharaan APAR Bulanan)
+   =========================================================== */
+const KONDISI_ITEMS = [
+  { key: 'kebersihanTabung', label: 'Kebersihan Tabung APAR', good: 'Bersih', bad: 'Kotor' },
+  { key: 'indikatorTekanan', label: 'Pemeriksaan Indikator Tekanan', good: 'Hijau', bad: 'Merah' },
+  { key: 'kunciPengaman', label: 'Pemeriksaan Kunci Pengaman', good: 'Ada', bad: 'Tidak Ada' },
+  { key: 'selangSemprot', label: 'Pemeriksaan Selang Semprot', good: 'Tidak Pecah', bad: 'Pecah' },
+  { key: 'nozzle', label: 'Pemeriksaan Nozzle', good: 'Ada', bad: 'Tidak Ada' },
+  { key: 'tagLabel', label: 'TAG Label Pemeliharaan', good: 'Ada', bad: 'Tidak Ada' },
+];
+
+let currentEntry = null; // entry sedang diisi di form scan
+
+function renderKondisiForm() {
+  const wrap = document.getElementById('kondisiList');
+  wrap.innerHTML = KONDISI_ITEMS.map(item => `
+    <div class="kondisi-item">
+      <div class="label">${item.label}</div>
+      <div class="toggle2">
+        <button type="button" data-key="${item.key}" data-val="good">${item.good}</button>
+        <button type="button" data-key="${item.key}" data-val="bad">${item.bad}</button>
+      </div>
+    </div>
+  `).join('');
+
+  wrap.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.key;
+      const val = btn.dataset.val;
+      currentEntry[key] = (currentEntry[key] === val) ? null : val;
+      refreshKondisiButtons();
+    });
+  });
+  refreshKondisiButtons();
+}
+
+function refreshKondisiButtons() {
+  document.querySelectorAll('#kondisiList button').forEach(btn => {
+    const key = btn.dataset.key;
+    const val = btn.dataset.val;
+    btn.classList.remove('on-good', 'on-bad');
+    if (currentEntry[key] === val) {
+      btn.classList.add(val === 'good' ? 'on-good' : 'on-bad');
+    }
+  });
+}
+
+/* ===========================================================
+   Upload foto (EVIDEN / KETERANGAN)
+   =========================================================== */
+const fotoInput = document.getElementById('fotoInput');
+const fotoPreview = document.getElementById('fotoPreview');
+const btnUploadFoto = document.getElementById('btnUploadFoto');
+const btnHapusFoto = document.getElementById('btnHapusFoto');
+
+btnUploadFoto.addEventListener('click', () => fotoInput.click());
+
+fotoInput.addEventListener('change', () => {
+  const file = fotoInput.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    currentEntry.foto = reader.result; // data URL base64
+    fotoPreview.src = currentEntry.foto;
+    fotoPreview.classList.add('show');
+    btnHapusFoto.classList.remove('hidden');
+  };
+  reader.readAsDataURL(file);
+});
+
+btnHapusFoto.addEventListener('click', () => {
+  currentEntry.foto = null;
+  fotoPreview.src = '';
+  fotoPreview.classList.remove('show');
+  btnHapusFoto.classList.add('hidden');
+  fotoInput.value = '';
+});
+
+/* ===========================================================
+   Tampilkan hasil lookup + siapkan form checklist
+   =========================================================== */
+const resultCard = document.getElementById('resultCard');
+const resultKode = document.getElementById('resultKode');
+const resultStatusBadge = document.getElementById('resultStatusBadge');
+const resultTitle = document.getElementById('resultTitle');
+const resultList = document.getElementById('resultList');
+const keteranganInput = document.getElementById('keteranganInput');
+
+const FIELD_LABELS = [
+  ['gedung', 'Gedung'],
+  ['lantai', 'Lantai'],
+  ['merk', 'Merk'],
+  ['kapasitas', 'Kapasitas'],
+  ['jenisGas', 'Jenis Gas'],
+  ['no', 'No. Data'],
+];
+
+function tampilkanData(kode) {
+  const data = DATA_BY_KODE[kode];
+  if (!data) {
+    resultCard.classList.add('hidden');
+    showStatus(`Kode "${kode}" tidak ditemukan di data FSS/APAR.`, 'err');
+    return;
+  }
+
+  const existing = LOG[data.id];
+  currentEntry = existing ? { ...existing } : {
+    id: data.id, kode: data.kode,
+    kebersihanTabung: null, indikatorTekanan: null, kunciPengaman: null,
+    selangSemprot: null, nozzle: null, tagLabel: null,
+    keterangan: '', foto: null, tanggal: null,
+  };
+
+  resultKode.textContent = 'Kode: ' + data.kode;
+  resultStatusBadge.textContent = existing ? '✅ Sudah Diperiksa' : '🆕 Belum Diperiksa';
+  resultStatusBadge.style.background = existing ? '#14532d' : '#334155';
+  resultStatusBadge.style.color = existing ? '#4ade80' : '#94a3b8';
+
+  resultTitle.textContent = data.ruangan || '-';
+  resultList.innerHTML = FIELD_LABELS.map(([key, label]) => {
+    const val = data[key];
+    return `<div class="row"><dt>${label}</dt><dd>${(val === null || val === undefined || val === '') ? '-' : val}</dd></div>`;
+  }).join('');
+
+  renderKondisiForm();
+  keteranganInput.value = currentEntry.keterangan || '';
+  if (currentEntry.foto) {
+    fotoPreview.src = currentEntry.foto;
+    fotoPreview.classList.add('show');
+    btnHapusFoto.classList.remove('hidden');
+  } else {
+    fotoPreview.src = '';
+    fotoPreview.classList.remove('show');
+    btnHapusFoto.classList.add('hidden');
+  }
+  fotoInput.value = '';
+
+  resultCard.classList.remove('hidden');
+  showStatus(existing ? 'Data ditemukan — hasil sebelumnya dimuat, silakan perbarui bila perlu ✅' : 'Data alat ditemukan, silakan isi checklist KONDISI ✅', 'ok');
+}
+
+document.getElementById('btnSimpan').addEventListener('click', () => {
+  if (!currentEntry) return;
+  currentEntry.keterangan = keteranganInput.value.trim();
+  currentEntry.tanggal = new Date().toISOString();
+  LOG[currentEntry.id] = currentEntry;
+  saveLog(LOG);
+  showStatus('Hasil pemeriksaan tersimpan ke Riwayat ✅', 'ok');
+  resultStatusBadge.textContent = '✅ Sudah Diperiksa';
+  resultStatusBadge.style.background = '#14532d';
+  resultStatusBadge.style.color = '#4ade80';
+});
+
+document.getElementById('btnCariManual').addEventListener('click', () => {
+  const kode = document.getElementById('manualKode').value.trim();
+  if (kode) tampilkanData(kode);
+});
+document.getElementById('manualKode').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('btnCariManual').click();
+});
+
+/* ===========================================================
+   QR Scanner
+   =========================================================== */
+let html5QrCode;
+const readerDiv = document.getElementById('reader');
+const btnStart = document.getElementById('btnStart');
+
+async function startScanner() {
+  readerDiv.classList.remove('hidden');
+  resultCard.classList.add('hidden');
+  btnStart.disabled = true;
+
+  html5QrCode = new Html5Qrcode("reader");
+  const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+
+  try {
+    await html5QrCode.start(
+      { facingMode: "environment" },
+      config,
+      onScanSuccess,
+      () => {}
+    );
+  } catch (err) {
+    showStatus('Gagal membuka kamera: ' + err, 'err');
+    btnStart.disabled = false;
+  }
+}
+
+async function stopScanner() {
+  if (html5QrCode) {
+    try { await html5QrCode.stop(); await html5QrCode.clear(); } catch (e) {}
+  }
+  readerDiv.classList.add('hidden');
+  btnStart.disabled = false;
+}
+
+async function onScanSuccess(decodedText) {
+  await stopScanner();
+  const kode = decodedText.trim();
+  tampilkanData(kode);
+}
+
+btnStart.addEventListener('click', startScanner);
+
+document.getElementById('btnScanLagi').addEventListener('click', () => {
+  resultCard.classList.add('hidden');
+  startScanner();
+});
+
+/* ===========================================================
+   RIWAYAT — daftar hasil pemeriksaan yang sudah diisi (tab di atas)
+   =========================================================== */
+function renderRiwayat() {
+  const q = (document.getElementById('searchRiwayat').value || '').toLowerCase();
+  const logList = document.getElementById('logList');
+
+  const entries = APAR_DATA
+    .filter(r => LOG[r.id])
+    .map(r => ({ data: r, entry: LOG[r.id] }))
+    .filter(({ data }) => {
+      if (!q) return true;
+      return String(data.kode).toLowerCase().includes(q)
+        || (data.ruangan || '').toLowerCase().includes(q)
+        || (data.gedung || '').toLowerCase().includes(q);
+    })
+    .sort((a, b) => new Date(b.entry.tanggal) - new Date(a.entry.tanggal));
+
+  if (!entries.length) {
+    logList.innerHTML = `<div class="empty-state">Belum ada riwayat pemeriksaan. Scan QR alat di tab Scan untuk mulai mengisi ✅</div>`;
+    return;
+  }
+
+  logList.innerHTML = entries.map(({ data, entry }) => {
+    const tgl = entry.tanggal ? new Date(entry.tanggal).toLocaleString('id-ID') : '-';
+    const eviden = entry.foto ? 'Ada' : 'Tidak Ada';
+    const fotoHtml = entry.foto ? `<img class="log-foto" src="${entry.foto}" alt="Bukti foto">` : '';
+    const ket = entry.keterangan ? `<div class="log-ket">📝 ${escapeHtml(entry.keterangan)}</div>` : '';
+    return `
+      <div class="log-item">
+        <div class="log-head">
+          <span class="log-kode">Kode ${data.kode}</span>
+          <span class="log-check">✅</span>
+        </div>
+        <div class="log-ruangan">${data.ruangan || '-'} — ${data.gedung || '-'}${data.lantai ? ' LT.' + data.lantai : ''}</div>
+        <div class="log-meta">${data.merk || ''} · ${data.kapasitas || ''} · ${data.jenisGas || ''} · Diperiksa: ${tgl} · EVIDEN: ${eviden}</div>
+        ${ket}
+        ${fotoHtml}
+      </div>
+    `;
+  }).join('');
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+document.getElementById('searchRiwayat').addEventListener('input', renderRiwayat);
+
+/* ===========================================================
+   PROGRES TUGAS — berapa dari total kode yang sudah selesai
+   =========================================================== */
+function renderProgress() {
+  const done = APAR_DATA.filter(r => r.kode && LOG[r.id]).length;
+  const pct = TOTAL_TUGAS ? Math.round((done / TOTAL_TUGAS) * 100) : 0;
+
+  document.getElementById('progressFill').style.width = pct + '%';
+  document.getElementById('progressText').textContent = `${done} / ${TOTAL_TUGAS} selesai`;
+  document.getElementById('progressPct').textContent = pct + '%';
+
+  const doneAllLabel = document.getElementById('doneAllLabel');
+  if (TOTAL_TUGAS > 0 && done >= TOTAL_TUGAS) {
+    doneAllLabel.classList.remove('hidden');
+    doneAllLabel.textContent = '🎉 Done All — Semua Tugas Selesai!';
+  } else {
+    doneAllLabel.classList.add('hidden');
+  }
+}
+
+document.getElementById('btnResetLog').addEventListener('click', () => {
+  if (!confirm('Hapus semua riwayat pemeriksaan di perangkat ini? Tindakan ini tidak bisa dibatalkan.')) return;
+  LOG = {};
+  saveLog(LOG);
+  renderRiwayat();
+  renderProgress();
+  showStatus('Semua riwayat telah dihapus.', 'info');
+});
+
+/* ===========================================================
+   DOWNLOAD EXCEL — Data FSS & APAR + kolom QRkode/KONDISI/KETERANGAN/foto
+   =========================================================== */
+document.getElementById('btnDownload').addEventListener('click', async () => {
+  const btn = document.getElementById('btnDownload');
+  btn.disabled = true;
+  btn.textContent = 'Menyiapkan file...';
+  try {
+    await downloadExcel();
+    showStatus('File Excel berhasil dibuat ✅', 'ok');
+  } catch (e) {
+    console.error(e);
+    showStatus('Gagal membuat file Excel: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⬇️ Download Excel (DATA FSS & APAR)';
+  }
+});
+
+async function downloadExcel() {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Scan QR APAR App';
+  wb.created = new Date();
+  const ws = wb.addWorksheet('DATA FSS & APAR');
+
+  const headerRow1 = [
+    'No', 'RUANGAN', 'GEDUNG', 'LANTAI', 'MERK', 'KAPASITAS', 'JENIS GAS', 'kode', 'QRkode',
+    'KONDISI', '', '', '', '', '', '',
+    'KETERANGAN', 'FOTO', 'TANGGAL PERIKSA', 'STATUS TUGAS'
+  ];
+  const headerRow2 = [
+    '', '', '', '', '', '', '', '', '',
+    'Kebersihan Tabung APAR', 'Pemeriksaan Indikator Tekanan', 'Pemeriksaan Kunci Pengaman',
+    'Pemeriksaan Selang Semprot', 'Pemeriksaan Nozzle', 'TAG Label Pemeliharaan', 'EVIDEN',
+    '', '', '', ''
+  ];
+
+  ws.addRow(headerRow1);
+  ws.addRow(headerRow2);
+
+  // Merge single-column headers vertically (row1:row2), and KONDISI across J1:P1
+  ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'Q', 'R', 'S', 'T'].forEach(col => {
+    ws.mergeCells(`${col}1:${col}2`);
+  });
+  ws.mergeCells('J1:P1');
+
+  [1, 2].forEach(r => {
+    ws.getRow(r).eachCell(cell => {
+      cell.font = { bold: true, size: 10 };
+      cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+      cell.font = { bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
+    });
+  });
+  ws.getRow(1).height = 18;
+  ws.getRow(2).height = 34;
+
+  ws.columns = [
+    { width: 5 }, { width: 24 }, { width: 12 }, { width: 8 }, { width: 12 }, { width: 10 }, { width: 16 },
+    { width: 8 }, { width: 10 },
+    { width: 16 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 14 }, { width: 16 }, { width: 10 },
+    { width: 26 }, { width: 14 }, { width: 16 }, { width: 14 },
+  ];
+
+  let rowIndex = 3;
+  for (const data of APAR_DATA) {
+    const entry = LOG[data.id];
+    const status = entry ? '✅ Selesai' : (data.kode ? 'Belum' : '-');
+    const tgl = entry && entry.tanggal ? new Date(entry.tanggal).toLocaleString('id-ID') : '-';
+
+    const row = ws.addRow([
+      data.no ?? '',
+      data.ruangan ?? '',
+      data.gedung ?? '',
+      data.lantai ?? '',
+      data.merk ?? '',
+      data.kapasitas ?? '',
+      data.jenisGas ?? '',
+      data.kode ?? '',
+      data.kode ?? '', // QRkode = isi kode yang sama dipakai untuk QR (menggantikan #VALUE!)
+      entry ? (entry.kebersihanTabung === 'good' ? 'Bersih' : entry.kebersihanTabung === 'bad' ? 'Kotor' : '-') : '-',
+      entry ? (entry.indikatorTekanan === 'good' ? 'Hijau' : entry.indikatorTekanan === 'bad' ? 'Merah' : '-') : '-',
+      entry ? (entry.kunciPengaman === 'good' ? 'Ada' : entry.kunciPengaman === 'bad' ? 'Tidak Ada' : '-') : '-',
+      entry ? (entry.selangSemprot === 'good' ? 'Tidak Pecah' : entry.selangSemprot === 'bad' ? 'Pecah' : '-') : '-',
+      entry ? (entry.nozzle === 'good' ? 'Ada' : entry.nozzle === 'bad' ? 'Tidak Ada' : '-') : '-',
+      entry ? (entry.tagLabel === 'good' ? 'Ada' : entry.tagLabel === 'bad' ? 'Tidak Ada' : '-') : '-',
+      entry ? (entry.foto ? 'Ada' : 'Tidak Ada') : '-',
+      entry && entry.keterangan ? entry.keterangan : '',
+      '', // kolom Foto diisi gambar (di bawah), teks dikosongkan
+      tgl,
+      status,
+    ]);
+    row.eachCell(cell => { cell.alignment = { vertical: 'middle', wrapText: true, horizontal: 'center' }; cell.font = { size: 9 }; });
+    row.getCell(2).alignment = { vertical: 'middle', horizontal: 'left', wrapText: true }; // ruangan rata kiri
+    row.getCell(17).alignment = { vertical: 'middle', horizontal: 'left', wrapText: true }; // keterangan rata kiri
+
+    if (entry && entry.foto) {
+      row.height = 70;
+      const match = /^data:image\/(png|jpe?g);base64,/.exec(entry.foto);
+      const ext = match ? (match[1] === 'jpg' ? 'jpeg' : match[1]) : 'jpeg';
+      const base64 = entry.foto.split(',')[1];
+      const imgId = wb.addImage({ base64, extension: ext });
+      ws.addImage(imgId, {
+        tl: { col: 17, row: rowIndex - 1 },
+        ext: { width: 90, height: 90 },
+      });
+    }
+    rowIndex++;
+  }
+
+  ws.views = [{ state: 'frozen', ySplit: 2 }];
+
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `DATA_FSS_APAR_${stamp}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/* ===========================================================
+   Init
+   =========================================================== */
+renderRiwayat();
+renderProgress();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Generate QR Kode Alat</title>
+<link rel="stylesheet" href="style.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="data.js"></script>
+<style>
+  .card { max-width: 900px; }
+  .qr-box { text-align: center; margin-top: 16px; }
+  .qr-box > div { background: white; display: inline-block; padding: 12px; border-radius: 10px; }
+  .qr-box p { font-weight: 700; margin: 10px 0 0; color:#0f172a; }
+
+  #batchGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 14px;
+    margin-top: 16px;
+  }
+  .qr-item {
+    background: white;
+    color: #0f172a;
+    border-radius: 10px;
+    padding: 10px;
+    text-align: center;
+    break-inside: avoid;
+  }
+  .qr-item .qr-canvas { display:flex; justify-content:center; }
+  .qr-item .qr-kode { font-weight: 800; font-size: 0.85rem; margin-top: 6px; }
+  .qr-item .qr-ruangan { font-size: 0.68rem; color: #334155; margin-top: 2px; line-height: 1.2; }
+</style>
+</head>
+<body>
+
+<a class="nav" href="index.html">← Kembali ke halaman scan</a>
+
+<div class="card">
+  <h1>🏷️ Generate QR Kode Alat — dari Data FSS &amp; APAR</h1>
+  <div class="hint">Membuat QR otomatis untuk tiap baris (kolom "kode" / QRkode) pada data FSS &amp; APAR. Total <span id="totalAlat">0</span> alat sudah punya kode. QR ini ditempel di alat masing-masing; saat discan lewat halaman utama, datanya langsung muncul dan siap diisi checklist.</div>
+  <label for="filterGedung">Filter Gedung (opsional)</label>
+  <select id="filterGedung"><option value="">Semua Gedung</option></select>
+  <button class="full" id="btnGenerateBatch">🔳 Buat Semua QR</button>
+  <button class="full secondary" id="btnPrintBatch">🖨️ Print / Simpan Semua QR</button>
+</div>
+
+<div class="card" id="printArea">
+  <h2>Semua QR Alat</h2>
+  <div id="batchGrid"></div>
+</div>
+
+<div class="card">
+  <h2>Buat 1 QR manual</h2>
+  <label for="kode">Kode Alat</label>
+  <input type="text" id="kode" placeholder="Contoh: 110" />
+  <button class="full" id="btnBuat">Buat QR</button>
+  <div class="qr-box hidden" id="qrBox">
+    <div id="qrCanvas"></div>
+    <p id="qrLabel"></p>
+  </div>
+  <button class="full secondary" id="btnPrint">🖨️ Print QR ini</button>
+</div>
+
+<script>
+  document.getElementById('totalAlat').textContent = APAR_DATA.filter(r => r.kode).length;
+
+  // ===== Isi filter gedung =====
+  const filterGedung = document.getElementById('filterGedung');
+  const gedungList = [...new Set(APAR_DATA.map(r => r.gedung).filter(Boolean))].sort();
+  gedungList.forEach(g => {
+    const opt = document.createElement('option');
+    opt.value = g;
+    opt.textContent = g;
+    filterGedung.appendChild(opt);
+  });
+
+  // ===== Generate batch QR per baris data (hanya yang punya kode) =====
+  const batchGrid = document.getElementById('batchGrid');
+
+  function generateBatch() {
+    const gedung = filterGedung.value;
+    let list = APAR_DATA.filter(r => r.kode);
+    if (gedung) list = list.filter(r => r.gedung === gedung);
+
+    batchGrid.innerHTML = '';
+    list.forEach(r => {
+      const item = document.createElement('div');
+      item.className = 'qr-item';
+
+      const canvasDiv = document.createElement('div');
+      canvasDiv.className = 'qr-canvas';
+      item.appendChild(canvasDiv);
+
+      const kodeP = document.createElement('div');
+      kodeP.className = 'qr-kode';
+      kodeP.textContent = 'Kode: ' + r.kode;
+      item.appendChild(kodeP);
+
+      const ruanganP = document.createElement('div');
+      ruanganP.className = 'qr-ruangan';
+      ruanganP.textContent = `${r.ruangan || ''} — ${r.gedung || ''}${r.lantai ? ' LT.' + r.lantai : ''}`;
+      item.appendChild(ruanganP);
+
+      batchGrid.appendChild(item);
+
+      // QR berisi kode alat (persis sama dengan yang dicari saat scan)
+      new QRCode(canvasDiv, {
+        text: String(r.kode),
+        width: 120,
+        height: 120,
+      });
+    });
+  }
+
+  document.getElementById('btnGenerateBatch').addEventListener('click', generateBatch);
+  filterGedung.addEventListener('change', generateBatch);
+  document.getElementById('btnPrintBatch').addEventListener('click', () => {
+    if (!batchGrid.children.length) generateBatch();
+    window.print();
+  });
+
+  // Auto-generate begitu halaman dibuka
+  generateBatch();
+
+  // ===== Buat 1 QR manual =====
+  const kodeInput = document.getElementById('kode');
+  const qrBox = document.getElementById('qrBox');
+  const qrCanvas = document.getElementById('qrCanvas');
+  const qrLabel = document.getElementById('qrLabel');
+
+  document.getElementById('btnBuat').addEventListener('click', () => {
+    const kode = kodeInput.value.trim();
+    if (!kode) return;
+
+    qrCanvas.innerHTML = '';
+    new QRCode(qrCanvas, {
+      text: kode,
+      width: 260,
+      height: 260,
+    });
+
+    qrLabel.textContent = 'Kode: ' + kode;
+    qrBox.classList.remove('hidden');
+  });
+
+  document.getElementById('btnPrint').addEventListener('click', () => {
+    window.print();
+  });
+
+  kodeInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('btnBuat').click();
+  });
+</script>
+
+</body>
+</html>
